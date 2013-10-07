@@ -1,5 +1,5 @@
-jid="PollBot@Eurosquad.co.uk"
-password="BrAaXBIt5u"
+jid="PollBot@Eurosquad.co.uk/Experimental Technology"
+password="Password Here"
 
 nick="PollBot"
 
@@ -13,10 +13,10 @@ server="eurosquad.co.uk"
 
 admins=["Syreniac"]
 
-banned_subreddits=["spacedicks","spaceclop"]
+banned_subreddits=["spacedicks","spaceclop","blackfathers","picsofdeadkids","sexwithdogs","gore","clopclop"]
 
 # jid="PollBot@localhost"
-# password="BrAaXBIt5u"
+# password="Password Here"
 
 # nick="PollBot"
 
@@ -29,3 +29,7 @@ banned_subreddits=["spacedicks","spaceclop"]
 # server="localhost"
 
 # admins=["admin"]
+
+# banned_subreddits=["spacedicks","spaceclop"]
+
+reddit_password="Password here"

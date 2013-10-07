@@ -6,6 +6,8 @@ import optparse
 import sleekxmpp
 import ssl
 
+import datetime
+
 import time
 
 import string
@@ -14,6 +16,9 @@ from os import listdir
 from os.path import isfile, join
 
 import redditLink
+import twitterLink
+import SoundcloudWatcher
+import Shibe
 
 # Try to get the config. This is needed for admins and also an optional set of default commandline args.
 # This is also the time to get any functionality modules.
@@ -25,7 +30,7 @@ from poker import *
 
 from overlyComplex import *
 
-def random_string(size=6, chars=string.ascii_uppercase + string.digits):
+def random_string(size=6, chars=string.ascii_uppercase + string.ascii_lowercase + string.digits):
 	return ''.join(random.choice(chars) for x in range(size))
 
 
@@ -43,7 +48,12 @@ def getLetter(a,b=None):
 		return l
 	else:
 		return string.lowercase[a]
-	
+		
+def endreplace(s,fs,rs):
+	if s.endswith(fs):
+		s=s[:-len(fs)]
+		s+=rs
+	return s
 
 class PollBot(sleekxmpp.ClientXMPP):
 	def __init__(self, jid, password, nick, channel, excludedNames, tiebreaker):
@@ -62,9 +72,16 @@ class PollBot(sleekxmpp.ClientXMPP):
 		self.pimpamspam={}
 		
 		self.redditLink=redditLink.GenericRedditLink(self)
+		self.eurosquadLink=redditLink.EurosquadRedditLink(self)
+		self.soundcloudWatcher=SoundcloudWatcher.SoundcloudWatcher(self)
+		self.Shibe=Shibe.Shibe(self)
 		
 		self.pounces={}
 
+		self.twitterTrackers=[twitterLink.TwitterLink(self,"eve_kill",["destroyed"],True)]
+		
+		self.scheduler.add("Twittertrack",30.0,self.twitterTrack,repeat=True)
+		
 		self.cakes=[ f for f in listdir("cakes/") if isfile(join("cakes/",f)) ]
 		a=0
 		while a<len(self.cakes):
@@ -80,7 +97,7 @@ class PollBot(sleekxmpp.ClientXMPP):
 		self.Ergoj="Ergoj Ormand"
 		self.ErgojWatched=False
 		
-		self.jidList=[]
+		self.jidList={}
 		self.polled=[]
 		self.polling=0
 		self.time=time.time()
@@ -88,6 +105,15 @@ class PollBot(sleekxmpp.ClientXMPP):
 		self.add_event_handler("session_start", self.start)
 		self.add_event_handler("groupchat_presence", self.updateJIDs)
 		self.add_event_handler("groupchat_message", self.msg_handler)
+		self.add_event_handler("message", self.admin_message)
+		#self.twitterTrack()
+		
+	def activate_punishment(self,nick):
+		self.scheduler.add("punishment:"+nick,0.1,self.punishment,args=(nick,),repeat=True)
+			
+	def twitterTrack(self):
+		for i in self.twitterTrackers:
+			i()
 			
 	def start(self, event):
 		self.send_presence()
@@ -95,9 +121,59 @@ class PollBot(sleekxmpp.ClientXMPP):
 		self.plugin['xep_0045'].joinMUC(self.channel, self.nick, wait=False)
 		self.plugin['xep_0045'].joinMUC(self.channel, self.nick, wait=False)
 		
+	def admin_message(self,msg):
+		
+		nick=jid2nick(msg["from"])
+		
+		for i in msg.keys():
+			print i+":"+str(msg[i])
+		
+		if msg["body"].startswith("!optout"):
+			self.jidList[nick]=False
+		elif msg["body"].startswith("!optin"):
+			self.jidList[nick]=True
+			
+		
+		if msg["type"]=="chat" and nick in config.admins:
+					
+			if msg["body"].startswith("!admin "):
+				s=msg["body"][7:]
+				if s in self.jidList:
+					config.admins.append(s)
+					self.send_message(mto=nick2jid(nick),mbody=s+" added as admin",mtype="chat")
+					self.send_message(mto=nick2jid(s),mbody="You have been added as an admin of PollBot. You may use the !admin, !redditban, !twittertrack and !twitteruntrack commands. These commands will only work for admins, and will work in private messages",mtype="chat")
+				else:
+					self.send_message(mto=nick2jid(nick),mbody=s+" not recognised",mtype="chat")
+					
+			if msg["body"].startswith("!redditban "):
+				s=msg["body"][11:]
+				config.banned_subreddits.append(s)
+				
+			if msg["body"].startswith("!twittertrack "):
+				s=msg["body"]
+				s.split(" ")
+				keywords=s[2].split(",")
+				self.twitterTrackers.append(twitterLink.TwitterLink(self,s[1],keywords,bool(s[3])))
+				
+			if msg["body"].startswith("!twitteruntrack "):
+				s=msg["body"][len("!twitteruntrack "):]
+				a=0
+				while a<len(self.twitterTrackers):
+					if self.twitterTrackers[a].target==s:
+						del self.twitterTrackers[a]
+					else:
+						a+=1
+
+
+		self.redditLink(msg)
+		self.eurosquadLink(msg)
+		self.soundcloudWatcher(msg)			
+		self.Shibe(msg)
+		
 	def updateJIDs(self,msg):
+		for i in msg.keys():
+			print i+":"+str(msg[i])
 		code=getCode(msg)
-		temp=self.jidList[:]
 		spli=str(msg["from"]).split("/")
 		m=spli[1]
 		if m.lower() in self.excludedNames:
@@ -107,8 +183,8 @@ class PollBot(sleekxmpp.ClientXMPP):
 			if self.pounces.has_key(m):
 				self.send_message(mto=self.channel, mbody=m+": "+self.pounces[m], mtype="groupchat")
 				del self.pounces[m]
-			if not m in self.jidList:
-				self.jidList.append(m)
+			if not m in self.jidList.keys():
+				self.jidList[m]=True
 			if self.Nichya==None:
 				self.Nichya=m
 				print "Nichya Detected"
@@ -132,10 +208,13 @@ class PollBot(sleekxmpp.ClientXMPP):
 			if code==307:
 				self.send_message(mto=self.channel,mbody="mods are literally hitler :godwin:",mtype="groupchat")
 			if m in self.jidList:
-				self.jidList.remove(m)
+				del self.jidList[m]
 			if m in self.polled:
 				self.polled[self.polled.index(m)]=None
 				print self.polled
+				
+			if msg["mucnick"].lower()=="pollbot" and code==307:
+				self.scheduler.add("Reconnect",1.0,self.start,repeat=False)
 		print "-------------------"
 			
 	def pollOver(self,b=None):
@@ -189,7 +268,8 @@ class PollBot(sleekxmpp.ClientXMPP):
 		
 	def pimpamspamFunc(self,user):
 		userNick=jid2nick(user)
-		self.pimpamspam[userNick]+=1
+		if self.pimpamspam[userNick]>0:
+			self.pimpamspam[userNick]+=1
 		if self.pimpamspam[userNick]==60:
 			self.pimpamspam[userNick]=None
 			self.scheduler.remove(userNick+":Pimpamspam")
@@ -216,33 +296,61 @@ class PollBot(sleekxmpp.ClientXMPP):
 			self.scheduler.add("Ergoj",10.0,self.ErgojWatching,repeat=False)
 			
 	def punishment(self,mucnick):
-		if self.punishing:
+		if mucnick in self.jidList:
 			s=random_string(random.randint(1,32))
 			self.send_message(mto=nick2jid(mucnick),mbody=s,mtype="chat")
 			
 	def msg_handler(self, msg):	
-
+	
 		if msg["mucnick"]==self.Nichya and self.NichyaIgnored:
 			self.NichyaIgnored=False
 			self.scheduler.add("nichya",10.0,self.nichyaIgnorance,repeat=False)
 		elif msg["mucnick"]==self.Nichya and self.NichyaIgnored==False:
-			return
+			return 
 			
 		if msg["mucnick"]==self.Ergoj and self.ErgojWatched:
 			return
 	
 		print msg["from"]
 		
-		if msg["body"].startswith("!fc"):
+		# if msg["body"].lower().endswith("c/d") or msg["body"].lower().endswith("c/d?"):
+			# r=random.choice(["c","d"])
+			# self.send_message(mto=self.channel,mbody=r,mtype="groupchat")
+		
+		if msg["body"].lower().startswith("!fc"):
 			self.send_message(mto=self.channel,mbody=self.FC(),mtype="groupchat")
 			self.ErgojFunc(msg["mucnick"])
+			
+		if msg["body"].lower().startswith("ergoj:") and not msg["mucnick"].lower() in config.excluded:
+			b=False
+			for i in self.jidList:
+				if "ormand" in i.lower():
+					b=True
+					name=i
+					break
+			
+			if b and i!=msg["body"]:
+				self.send_message(mto=self.channel,mbody=i+": ^",mtype="groupchat")
+				
+		if "failcascade" in msg["body"].lower():
+			self.send_message(mto=self.channel,mbody="WEARY ^", mtype="groupchat")
+			
+		if "nichya" in msg["body"].lower() and not msg["mucnick"].lower() in config.excluded:
+			b=False
+			for i in self.jidList:
+				if "el presidente" == i.lower():
+					b=True
+					name=i
+					break
+			
+			if b and i!=msg["body"]:
+				self.send_message(mto=self.channel,mbody=i+": ^",mtype="groupchat")
 	
 		# if msg["mucnick"]=="jaffinator":
 			# self.scheduler.remove("Jaffinator")
 			# self.scheduler.add("Jaffinator",3.0,self.jaffinatorS,repeat=False)
 	
 		#self.pokerBot(msg)
-		self.redditLink(msg)
 		
 		if msg["body"].startswith("!help") and not msg["mucnick"].lower() in self.excludedNames:
 			s="\n"
@@ -276,7 +384,7 @@ class PollBot(sleekxmpp.ClientXMPP):
 		elif "dicks" in msg["body"] and self.bossstubsMemorial:
 			self.bossstubsMemorial=False
 			self.scheduler.add("bossstubs",10.0,self.bossStubsMemorial,repeat=False)
-			l=self.jidList[:]
+			l=self.jidList.keys()[:]
 			a=0
 			while a<len(l):
 				l[a]=l[a].lower()
@@ -303,12 +411,24 @@ class PollBot(sleekxmpp.ClientXMPP):
 				self.send_message(mto=self.channel, mbody="Pimpamspam readied. Type confirmed to use. Please be warned that Syreniac is not responsible for any damages that may occur on use of this command", mtype="groupchat")
 				self.pimpamspamPreparing=msg["from"]
 				
-		elif msg["body"]==":order66:" and msg["mucnick"] in config.admins:
-			for i in self.jidList:
-				n=nick2jid(i)
-				self.pimpamspam[i]=0
+		elif msg["body"].startswith("!endlesstorment") and msg["mucnick"] in config.admins:
+			print "From an admin"
+			try:
+				n=msg["body"].split(":")[1]
+				self.pimpamspam[n]=-1
+				self.scheduler.add(n+":Pimpamspam",0.1,self.pimpamspamFunc,args=(nick2jid(n),),repeat=True)
 				self.pimpamspamPreparing=None
-				self.scheduler.add(i+":Pimpamspam",0.1,self.pimpamspamFunc,args=(n,),repeat=True)
+			except IndexError:
+				self.send_message(mto=self.channel, mbody="Pimpamspam readied. Type confirmed to use. Please be warned that Syreniac is not responsible for any damages that may occur on use of this command", mtype="groupchat")
+				self.pimpamspamPreparing=msg["from"]
+			
+				
+		# elif msg["body"]==":order66:" and msg["mucnick"] in config.admins:
+			# for i in self.jidList:
+				# n=nick2jid(i)
+				# self.pimpamspam[i]=0
+				# self.pimpamspamPreparing=None
+				# self.scheduler.add(i+":Pimpamspam",0.1,self.pimpamspamFunc,args=(n,),repeat=True)
 				
 			
 		elif "tele:ssh:" in msg["body"].lower():
@@ -327,7 +447,6 @@ class PollBot(sleekxmpp.ClientXMPP):
 			spli=m.split("|")
 			self.pounces[spli[0]]=spli[1]
 			print spli
-
 			
 		elif msg["body"].startswith("!timer"):
 			m=msg["body"].replace("!timer","")
@@ -357,7 +476,10 @@ class PollBot(sleekxmpp.ClientXMPP):
 		elif msg["body"]=="they have suffered enough" and msg["mucnick"] in config.admins:
 			print "punishment stopped"
 			self.punishing=False
-			self.scheduler.remove("punishment")
+			for i in self.jidList:
+				self.scheduler.remove("punishment:"+i)
+			for i in self.pimpamspam.keys():
+				self.scheduler.remove(i+":Pimpamspam")
 	
 		elif msg["body"].lower().startswith("!die"):
 			if msg["mucnick"] in config.admins:
@@ -450,9 +572,10 @@ class PollBot(sleekxmpp.ClientXMPP):
 	def timering(self,name):
 			
 		self.send_message(mto=self.channel, mbody=name.rstrip(" ")+": time's up!", mtype="groupchat")
+		
 	def FC(self):
-		commands=["Primary is %",
-				  "Secondary is %",
+		commands=["Primary is %|",
+				  "Secondary is %|",
 				  "Don't shoot %",
 				  "Shoot %",
 				  "Burn towards %",
@@ -487,7 +610,8 @@ class PollBot(sleekxmpp.ClientXMPP):
 				  "Free burn",
 				  "If you jump, you're dead",
 				  "You jumped, didn't you?",
-				  "Can I get my & to scout?",
+				  "Can I get { to scout?",
+				  "Can I get & to scout?",
 				  "Time to commissar %",
 				  "RABBLE RABBLE RABBLE",
 				  "CHECK CHECK CHECK",
@@ -496,7 +620,7 @@ class PollBot(sleekxmpp.ClientXMPP):
 				  "Put gfs in local",
 				  "Smack talk in local",
 				  "Orbit $ at *",
-				  "Keep at Range $ at *",
+				  "Keep % at Range at *",
 				  "We're standing down",
 				  "Does anyone have a perch?",
 				  'Log in to Kugu and post "YOU GOT DUNKED"',
@@ -511,9 +635,9 @@ class PollBot(sleekxmpp.ClientXMPP):
 				  "Who's alt just awoxed?",
 				  "SPAIS!!!!!!",
 				  "We need more spies!",
-				  "We need more #",
-				  "Why would we need more #",
-				  "# are useless for this fleet",
+				  "We need more #^",
+				  "Why would we need more #^",
+				  "~ ^ useless for this fleet",
 				  "Anchor on me",
 				  "Align to a random celestial",
 				  "Hands are clean!",
@@ -524,13 +648,20 @@ class PollBot(sleekxmpp.ClientXMPP):
 				  "Bridge, bridge, bridge",
 				  "Jump, jump, jump",
 				  "Diplos can deal with it",
-				  "Hostile supers tackled :frogsiren:",
+				  ":frogsiren: Hostile supers tackled :frogsiren:",
+				  ":frogsiren: FRIENDLY SUPERS TACKLED :frogsiren:",
 				  "Ha, jokes on you, it's actually a structure shoot",
 				  "Well, I've been poached by PL, see you round!",
 				  "Well, I've been poached by DYS0N, see you later!",
 				  "Well, I've been poached by EMP, see you later!",
-				  "Well, I've been poached by Goons, see you later!"
-				  ]
+				  "Well, I've been poached by Goons, see you later!",
+				  "welp",
+				  "VFK by []!",
+				  "Was it %|? I bet it was %|",
+				  ":getin:",
+				  "But what about my killboard stats!?",
+				  "Nobody cares about your killboard stats",
+				  "Your killboard stats are terrible."]
 				  
 		targets=["Rifter",
 				 "Burst",
@@ -563,7 +694,6 @@ class PollBot(sleekxmpp.ClientXMPP):
 				 "Ragnarok",
 				 "Leviathan",
 				 "Titan",
-				 "Fucking Titan",
 				 "Falcon",
 				 "Blackbird",
 				 "Scimitar",
@@ -615,25 +745,105 @@ class PollBot(sleekxmpp.ClientXMPP):
 				 "Legion",
 				 "Loki",
 				 "Velator",
-				 "Goon"]
+				 "Goon",
+				 "@the Mittani",
+				 "@Shadoo",
+				 "@Wrik Hoover",
+				 "@Phreeze",
+				 "@progodlegend",
+				 "@Boodabooda",
+				 "@Dysphonia",
+				 "@Durrhurrdurr"]
+				 
+		expletives=[]
+		for i in range(40):
+			expletives.append("")
+		
+		expletives.extend(["fucking ",
+						   "god damn ",
+						   "bloody ",
+						   "retarded ",
+						   "shitty ",
+						   "terribad ",])
+						   
+		dates=["January",
+			   "Febuary",
+			   "March",
+			   "April",
+			   "May",
+			   "June",
+			   "July",
+			   "August",
+			   "September",
+			   "October",
+			   "November",
+			   "December"]
+			
+		for i in range(10):
+			dates.append(str(2013+i))
 				 
 		t=random.choice(targets)
+		e=random.choice(expletives).lower()
+		if t[0]!="@":
+			t=e+t
+		else:
+			t="@"+e+t[1:]
 		c=random.choice(commands)
+		print "t:"+t
+		print "c:"+c
 		if not t.startswith("@"):
-			c=c.replace("%","the "+t)
+			r=random.random()
+			if r>0.5 and not "%|" in c:
+				t_var="~"
+			else:
+				t_var=t
+				
+				
+			c=c.replace("#^", "~")
+				
+			c=c.replace("%","the "+t_var)
+			c=c.replace("#",t)
+			c=c.replace("{","my "+t)
 			if t.lower().startswith("a") or t.lower().startswith("e") or t.lower().startswith("i") or t.lower().startswith("o") or t.lower().startswith("u"):
 				c=c.replace("$","an "+t)
 			else:
 				c=c.replace("$","a "+t)
+			
+			if "~" in c:
+				if t[-2:]=="us":
+					c=c.replace("~",endreplace(t,"us","ii"))
+					c=c.replace("^","are")
+				elif t[-1]=="x":
+					c=c.replace("~",endreplace(t,"x","xen"))
+					c=c.replace("^","are")
+				elif t[-2:]=="as":
+					c=c.replace("~",endreplace(t,"as","ae"))
+					c=c.replace("^","are")
+				elif t[-1]=="s":
+					c=c.replace("~",t+"es")
+					c=c.replace("^","are")
+				else:
+					c=c.replace("~",t+"s")
+					c=c.replace("^","are")
+			
+			c=c.replace("^","is")
+			
 		else:
 			t=t.replace("@","")
+			c=c.replace("#^","#")
+			c=c.replace("{",t)
 			c=c.replace("%",t)
+			c=c.replace("#","of "+t)
 			c=c.replace("$",t)
+			c=c.replace("~",t)
+			c=c.replace("^","is")
 		r=random.randint(1,6)*5
+		c=c.replace("[]",random.choice(dates))
 		c=c.replace("*",str(r))
-		c=c.replace("&",t)
-		c=c.replace("#",t+"s")
-		c=c.replace("&",random.choice(self.jidList))
+		c=c.replace("&",random.choice(self.jidList.keys()))
+		c=c.replace("|","")
+		c=c[0].upper()+c[1:]
+		
 		return c
 				
 if __name__ == "__main__":
